@@ -48,11 +48,11 @@ def main():
 
     x_df = df.loc[:lookback - 1, ["open", "high", "low", "close", "volume", "amount"]]
     x_timestamp = df.loc[:lookback - 1, "timestamps"]
-    y_timestamp = pd.date_range(
+    y_timestamp = pd.Series(pd.date_range(
         start=df.loc[lookback - 1, "timestamps"] + timedelta(hours=1),
         periods=pred_len,
         freq="1h",
-    )
+    ))
 
     print(f"Forecasting next {pred_len} hours using {lookback} bars of context...")
     pred_df = predictor.predict(
