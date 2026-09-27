@@ -71,31 +71,43 @@ def fetch_real_data(symbol="BTC/USDT", timeframe="1h", total_bars=2000, exchange
         print("  3. Use a CSV: --csv yourdata.csv")
         sys.exit(1)
 
-    all_bars = []
-    since = None
+    # Map timeframe to milliseconds for backward pagination
+    tf_ms = {
+        "1m": 60_000, "5m": 300_000, "15m": 900_000,
+        "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
+    }
+    candle_ms = tf_ms.get(timeframe, 3_600_000)
     batch_size = 720
-    fetched = 0
 
     print(f"Fetching {total_bars} bars of {symbol} {timeframe} data...")
 
-    while fetched < total_bars:
-        limit = min(batch_size, total_bars - fetched)
+    # First fetch: get latest bars (no `since`)
+    all_bars = []
+    try:
+        bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=batch_size)
+        if bars:
+            all_bars = bars
+            print(f"  Fetched {len(all_bars)}/{total_bars} bars...")
+    except Exception as e:
+        print(f"Fetch error: {e}")
+
+    # Paginate backwards to get older data
+    while len(all_bars) < total_bars and all_bars:
+        earliest_ts = all_bars[0][0]
+        since = earliest_ts - batch_size * candle_ms
         try:
-            if since is None:
-                bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            else:
-                bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
+            bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=batch_size)
         except Exception as e:
             print(f"Fetch error: {e}")
             break
-
         if not bars:
             break
-
-        all_bars.extend(bars)
-        fetched = len(all_bars)
-        since = bars[-1][0] + 1
-        print(f"  Fetched {fetched}/{total_bars} bars...")
+        # Keep only bars older than what we already have
+        new_bars = [b for b in bars if b[0] < earliest_ts]
+        if not new_bars:
+            break
+        all_bars = new_bars + all_bars
+        print(f"  Fetched {len(all_bars)}/{total_bars} bars...")
 
     if not all_bars:
         print("No data fetched. Check network and symbol.")
@@ -106,6 +118,10 @@ def fetch_real_data(symbol="BTC/USDT", timeframe="1h", total_bars=2000, exchange
     df["amount"] = df["volume"] * df["close"]
     df = df[["timestamps", "open", "high", "low", "close", "volume", "amount"]]
     df = df.drop_duplicates(subset="timestamps").sort_values("timestamps").reset_index(drop=True)
+
+    # Trim to requested size (keep latest)
+    if len(df) > total_bars:
+        df = df.iloc[-total_bars:].reset_index(drop=True)
 
     print(f"Got {len(df)} unique bars from {df['timestamps'].iloc[0]} to {df['timestamps'].iloc[-1]}")
     return df
@@ -480,11 +496,17 @@ def main():
     n = len(df)
     split_idx = int(n * (1 - args.test_pct))
 
-    # Make sure test set is big enough
-    min_test_bars = args.lookback + args.forecast + args.step * 5
-    if n - split_idx < min_test_bars:
-        print(f"Test set too small ({n - split_idx} bars). Need at least {min_test_bars}.")
+    # Make sure test set has enough bars for meaningful predictions
+    # (lookback is prepended separately, so we only need forecast + a few steps)
+    min_oos_bars = args.forecast + args.step * 3
+    if n - split_idx < min_oos_bars:
+        print(f"Test set too small ({n - split_idx} bars). Need at least {min_oos_bars}.")
         print("Fetch more data with --bars or reduce --test-pct.")
+        sys.exit(1)
+
+    if split_idx < args.lookback:
+        print(f"Not enough in-sample data for lookback ({split_idx} < {args.lookback}).")
+        print("Reduce --lookback or fetch more data.")
         sys.exit(1)
 
     df_test = df.iloc[split_idx - args.lookback:].reset_index(drop=True)
