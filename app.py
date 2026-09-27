@@ -22,10 +22,21 @@ def load_model(model_name):
 
 
 def fetch_live_data(symbol, timeframe, limit):
-    """Fetch OHLCV from Binance via ccxt."""
+    """Fetch OHLCV via ccxt with automatic exchange fallback for US users."""
     import ccxt
-    exchange = ccxt.binance({"enableRateLimit": True})
-    bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    for eid in ["kraken", "kucoin", "binanceus", "binance", "coinbasepro"]:
+        try:
+            ex_class = getattr(ccxt, eid, None)
+            if ex_class is None:
+                continue
+            exchange = ex_class({"enableRateLimit": True})
+            bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            if bars:
+                break
+        except Exception:
+            continue
+    else:
+        raise RuntimeError("All exchanges failed. Try BTC/USD for Kraken, or use CSV/Demo mode.")
     df = pd.DataFrame(bars, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamps"] = pd.to_datetime(df["timestamp"], unit="ms")
     df["amount"] = df["volume"] * df["close"]

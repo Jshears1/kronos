@@ -21,15 +21,28 @@ from model import Kronos, KronosTokenizer, KronosPredictor
 
 
 def fetch_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=500):
-    """Fetch OHLCV data from Binance via ccxt."""
+    """Fetch OHLCV data via ccxt with automatic exchange fallback for US users."""
     try:
         import ccxt
     except ImportError:
         print("ccxt not installed. Run: pip install ccxt")
         sys.exit(1)
 
-    exchange = ccxt.binance({"enableRateLimit": True})
-    bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    for eid in ["kraken", "kucoin", "binanceus", "binance", "coinbasepro"]:
+        try:
+            ex_class = getattr(ccxt, eid, None)
+            if ex_class is None:
+                continue
+            exchange = ex_class({"enableRateLimit": True})
+            bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            if bars:
+                print(f"Using exchange: {eid}")
+                break
+        except Exception:
+            continue
+    else:
+        print("All exchanges failed. Try BTC/USD for Kraken, or use --csv / --demo.")
+        sys.exit(1)
 
     df = pd.DataFrame(bars, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamps"] = pd.to_datetime(df["timestamp"], unit="ms")

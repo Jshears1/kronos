@@ -33,19 +33,47 @@ sys.path.insert(0, ".")
 from model import Kronos, KronosTokenizer, KronosPredictor
 
 
-def fetch_real_data(symbol="BTC/USDT", timeframe="1h", total_bars=2000):
-    """Fetch real OHLCV data from Binance. Paginate to get enough history."""
+def fetch_real_data(symbol="BTC/USDT", timeframe="1h", total_bars=2000, exchange_id=None):
+    """Fetch real OHLCV data with automatic exchange fallback for US users."""
     try:
         import ccxt
     except ImportError:
         print("ccxt required: pip install ccxt")
         sys.exit(1)
 
-    exchange = ccxt.binance({"enableRateLimit": True})
+    # Exchanges that work in the US, in order of preference
+    if exchange_id:
+        exchange_list = [exchange_id]
+    else:
+        exchange_list = ["kraken", "kucoin", "binanceus", "binance", "coinbasepro"]
+
+    exchange = None
+    for eid in exchange_list:
+        try:
+            ex_class = getattr(ccxt, eid, None)
+            if ex_class is None:
+                continue
+            ex = ex_class({"enableRateLimit": True})
+            # Quick test fetch
+            test = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=5)
+            if test:
+                exchange = ex
+                print(f"Using exchange: {eid}")
+                break
+        except Exception as e:
+            print(f"  {eid}: unavailable ({type(e).__name__}: {str(e)[:80]})")
+            continue
+
+    if exchange is None:
+        print("\nAll exchanges failed. Options:")
+        print("  1. Specify an exchange: --exchange kraken")
+        print("  2. Some pairs differ by exchange (try BTC/USD instead of BTC/USDT for Kraken)")
+        print("  3. Use a CSV: --csv yourdata.csv")
+        sys.exit(1)
 
     all_bars = []
     since = None
-    batch_size = 1000
+    batch_size = 720
     fetched = 0
 
     print(f"Fetching {total_bars} bars of {symbol} {timeframe} data...")
@@ -423,6 +451,7 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.5, help="Signal threshold (%%)")
     parser.add_argument("--samples", type=int, default=1, help="Forecast samples per step")
     parser.add_argument("--model", default="NeoQuasar/Kronos-small", help="Model name")
+    parser.add_argument("--exchange", default=None, help="Exchange ID (kraken, kucoin, binanceus, coinbasepro)")
     parser.add_argument("--save-data", action="store_true", help="Save fetched data to CSV")
     parser.add_argument("--sweep", action="store_true", help="Run threshold sweep")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print each signal")
@@ -440,7 +469,7 @@ def main():
         print(f"Loading {args.csv}...")
         df = load_csv(args.csv)
     else:
-        df = fetch_real_data(args.symbol, args.timeframe, args.bars)
+        df = fetch_real_data(args.symbol, args.timeframe, args.bars, args.exchange)
 
     if args.save_data and not args.csv:
         fname = f"{args.symbol.replace('/', '_')}_{args.timeframe}_{len(df)}bars.csv"
